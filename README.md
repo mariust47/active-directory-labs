@@ -1,15 +1,13 @@
 # Active Directory Labs
 
-Hands-on labs documenting my Windows Server and Active Directory practice, built while preparing for systems administration and directory services roles.
+My Windows Server and Active Directory home labs. I'm moving from cloud support toward directory services work, and this is where I practice and keep notes on what I build and what breaks along the way.
 
-| Lab | Topics |
+| Lab | What's in it |
 |---|---|
-| [Active Directory Domain with Group Policy](ad-domain-group-policy/) | AD DS, DNS, OUs, security groups, account troubleshooting, domain-wide password policy GPO, PowerShell bulk provisioning from CSV, DHCP authorization and reservations |
-| [Active Directory Backup & Recovery](ad-backup-recovery/) | System State backup with Windows Server Backup, VSS and catalog verification, AD Recycle Bin restores (user and whole OU), scheduled daily backup |
-| [Build an Active Directory Domain – Security Monitoring](ad-domain-security-monitoring/) | AD DS, DNS, OUs, security groups, department GPOs, audit policies, Performance Monitor, Event Viewer (4624, 4625, 4720), PowerShell bulk user creation |
+| [Active Directory Domain with Group Policy](ad-domain-group-policy/) | DC from scratch, OUs and groups, fixing disabled accounts, password/lockout GPO, bulk users from CSV with PowerShell, DHCP with reservations |
+| [AD Security Monitoring](ad-domain-security-monitoring/) | Department GPOs and audit policies, Performance Monitor on the DC, Event Viewer (4624, 4625, 4720) |
+| [AD Backup and Recovery](ad-backup-recovery/) | System State backups, AD Recycle Bin restores (one user and a whole OU), scheduled backup, and fixing a backup that failed |
 
-**Certification:** Microsoft Applied Skills – *Administer Active Directory Domain Services*
+Certification: Microsoft Applied Skills, *Administer Active Directory Domain Services*
 
----
-
-Marius Tebrean · [LinkedIn](https://linkedin.com/in/mariustebrean)
+[LinkedIn](https://linkedin.com/in/mariustebrean)
