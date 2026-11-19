@@ -1,4 +1,4 @@
-# Active Directory Backup & Recovery
+Active Directory Backup & Recovery
 
 Hands-on lab: protecting a domain controller with System State backups, verifying what the backup contains, recovering deleted objects with the AD Recycle Bin, and automating a daily backup.
 
@@ -14,19 +14,19 @@ Hands-on lab: protecting a domain controller with System State backups, verifyin
 
 ---
 
-## 1. Dedicated backup disk
+1.Dedicated backup disk
 
 Backups go on a separate disk, not on the system volume, so they survive a failure of `C:`. A 20 GB VHDX was attached to the VM and formatted as `E:` (`ADBackup`).
 
 ![Backup disk E: ADBackup](screenshots/01-backup-disk.png)
 
-## 2. Windows Server Backup
+2. Windows Server Backup
 
 Installed the Windows Server Backup feature, which provides `wbadmin` and VSS-based, application-consistent backups.
 
 ![Windows Server Backup installed](screenshots/02-wsb-installed.png)
 
-## 3. Pre-backup checks
+3. Pre-backup checks
 
 - **NTDS VSS writer** (the Active Directory writer): `State: [1] Stable`, `Last error: No error`. A failed writer means an inconsistent AD backup.
 - **Backup catalog:** no previous backup on `E:`.
@@ -38,7 +38,7 @@ wbadmin get versions -backuptarget:E:
 
 ![NTDS writer stable, no existing backup](screenshots/03-vss-writers.png)
 
-## 4. First System State backup
+4. First System State backup
 
 System State on a domain controller includes the AD database (`NTDS.dit`), SYSVOL, the registry, boot files, and AD-integrated DNS.
 
@@ -52,7 +52,7 @@ The backup created a VSS shadow copy, identified the system state files, and com
 
 ![Backup completed successfully](screenshots/04b-backup-completed.png)
 
-## 5. Verifying the backup
+5.Verifying the backup
 
 A successful job is not enough: the backup has to be in the catalog and contain the right components.
 
@@ -73,7 +73,7 @@ The recovery point can restore **Volume(s), File(s), Application(s), and System 
 
 ![Backup items: NTDS, SYSVOL, Registry](screenshots/05b-backup-items.png)
 
-## 6. AD Recycle Bin
+6.AD Recycle Bin
 
 The Recycle Bin restores deleted objects with **all their attributes**, including group memberships, without restoring the whole DC from backup. Enabling it is irreversible.
 
@@ -87,13 +87,13 @@ Get-ADOptionalFeature -Filter "Name -eq 'Recycle Bin Feature'" | Format-List Nam
 
 ![Recycle Bin enabled scopes](screenshots/06-recycle-bin-enabled.png)
 
-## 7. Test objects
+7. Test objects
 
 Created an OU `BackupTest` with a security group `BT-Group` and three users, all members of the group.
 
 ![Test OU, group and users](screenshots/07-test-objects.png)
 
-## 8. Scenario: one user deleted by mistake
+8. Scenario: one user deleted by mistake
 
 **Delete:** after `Remove-ADUser`, the user no longer exists in the domain. It appears in Deleted Objects as `BT User1 DEL:<GUID>`, with `Deleted: True` and `LastKnownParent: OU=BackupTest`.
 
@@ -112,7 +112,7 @@ Get-ADObject -Filter 'samAccountName -eq "bt.user1"' -IncludeDeletedObjects | Re
 
 ![User restored with group membership](screenshots/08b-user-restored.png)
 
-## 9. Scenario: a whole OU deleted
+9.Scenario: a whole OU deleted
 
 **Delete:** `Remove-ADOrganizationalUnit -Recursive` removed the OU, the group, and all three users. All five objects moved to Deleted Objects.
 
@@ -129,7 +129,7 @@ All objects are back, and `BT-Group` again has its three members.
 
 ![OU, group and users restored](screenshots/09b-ou-restored.png)
 
-## 10. Automated daily backup
+10. Automated daily backup
 
 Registered a scheduled task that runs a System State backup every day at 02:00 as `SYSTEM`, then started it once to test it.
 
@@ -142,7 +142,7 @@ Start-ScheduledTask -TaskName "AD-SystemState-Backup"
 
 ![Scheduled backup task running](screenshots/10a-scheduled-task-running.png)
 
-## 11. Troubleshooting: the scheduled backup failed
+11. Troubleshooting: the scheduled backup failed
 
 The test run of the scheduled task ended with *"The backup operation completed with errors. The backup of the system state failed."*
 
