@@ -1,35 +1,35 @@
-Active Directory Backup & Recovery
+# AD Backup and Recovery
 
-Hands-on lab: protecting a domain controller with System State backups, verifying what the backup contains, recovering deleted objects with the AD Recycle Bin, and automating a daily backup.
+Backing up a domain controller, checking the backup is actually usable, restoring deleted objects, and scheduling it to run every night. The scheduled backup failed the first time, so the second half of this page is about fixing that.
 
-**Environment:** Hyper-V · Windows Server 2025 domain controller `TAILWIND-DC1` · Domain: `tailwindtraders.internal`  
-**Tools:** Windows Server Backup, `wbadmin`, `vssadmin`, ActiveDirectory PowerShell module, AD Recycle Bin, Task Scheduler
+- DC: `TAILWIND-DC1`, Windows Server 2025, on Hyper-V
+- Domain: `tailwindtraders.internal` (there's a second DC, `TAILWIND-MBR1`, which was off for most of this)
+- Tools: Windows Server Backup / `wbadmin`, `vssadmin`, AD PowerShell module, Task Scheduler
 
-| Recovery scenario | Method used |
+What I covered:
+
+| Situation | How I handled it |
 |---|---|
-| A user deleted by mistake | AD Recycle Bin (`Restore-ADObject`) |
-| A whole OU deleted with its users and groups | AD Recycle Bin, restoring parent before children |
-| DC failure or directory corruption | System State backup with Windows Server Backup |
-| Scheduled backup failing | Diagnosis from backup and event logs, then freeing and resizing the backup target |
+| One user deleted by mistake | AD Recycle Bin |
+| A whole OU deleted, with users and a group | AD Recycle Bin, parent OU first, then the objects inside it |
+| DC lost or directory corrupted | System State backup |
+| Scheduled backup failing | Logs, then freeing and resizing the backup disk |
 
----
+## 1. Separate disk for backups
 
-1.Dedicated backup disk
-
-Backups go on a separate disk, not on the system volume, so they survive a failure of `C:`. A 20 GB VHDX was attached to the VM and formatted as `E:` (`ADBackup`).
+If `C:` dies, the backups shouldn't die with it, so I added a 20 GB virtual disk to the VM and formatted it as `E:` (`ADBackup`).
 
 ![Backup disk E: ADBackup](screenshots/01-backup-disk.png)
 
-2. Windows Server Backup
+## 2. Windows Server Backup
 
-Installed the Windows Server Backup feature, which provides `wbadmin` and VSS-based, application-consistent backups.
+Installed the Windows Server Backup feature. It gives you `wbadmin` and uses VSS, so the AD database is backed up in a consistent state.
 
 ![Windows Server Backup installed](screenshots/02-wsb-installed.png)
 
-3. Pre-backup checks
+## 3. Checks before the first backup
 
-- **NTDS VSS writer** (the Active Directory writer): `State: [1] Stable`, `Last error: No error`. A failed writer means an inconsistent AD backup.
-- **Backup catalog:** no previous backup on `E:`.
+The NTDS writer is the VSS writer for Active Directory. If it's in a failed state the AD part of the backup won't be consistent, so I checked it first: `Stable`, no error. The catalog on `E:` was empty, as expected.
 
 ```powershell
 vssadmin list writers | Select-String "NTDS" -Context 0,4
@@ -38,34 +38,34 @@ wbadmin get versions -backuptarget:E:
 
 ![NTDS writer stable, no existing backup](screenshots/03-vss-writers.png)
 
-4. First System State backup
+## 4. First System State backup
 
-System State on a domain controller includes the AD database (`NTDS.dit`), SYSVOL, the registry, boot files, and AD-integrated DNS.
+On a DC, System State includes `NTDS.dit`, SYSVOL, the registry, boot files and AD-integrated DNS.
 
 ```powershell
 wbadmin start systemstatebackup -backuptarget:E:
 ```
 
-The backup created a VSS shadow copy, identified the system state files, and completed successfully.
+Most of the time went into the "identifying files" phase (it found over 90,000 files) before it started copying. It finished without errors.
 
 ![Backup started](screenshots/04a-backup-started.png)
 
 ![Backup completed successfully](screenshots/04b-backup-completed.png)
 
-5.Verifying the backup
+## 5. Checking what's in the backup
 
-A successful job is not enough: the backup has to be in the catalog and contain the right components.
+"Completed successfully" doesn't prove much on its own, so I looked at the catalog and the items inside the version:
 
 ```powershell
 wbadmin get versions -backuptarget:E:
 wbadmin get items -version:<version-id> -backuptarget:E:
 ```
 
-The recovery point can restore **Volume(s), File(s), Application(s), and System State**, and includes:
+It can restore volumes, files, applications and System State, and it contains the three things that matter on a DC:
 
 | Application | Component |
 |---|---|
-| AD | `ntds` (the Active Directory database) |
+| AD | `ntds` |
 | FRS | SYSVOL |
 | Registry | `\Registry` |
 
@@ -73,13 +73,15 @@ The recovery point can restore **Volume(s), File(s), Application(s), and System 
 
 ![Backup items: NTDS, SYSVOL, Registry](screenshots/05b-backup-items.png)
 
-6.AD Recycle Bin
+## 6. AD Recycle Bin
 
-The Recycle Bin restores deleted objects with **all their attributes**, including group memberships, without restoring the whole DC from backup. Enabling it is irreversible.
+With the Recycle Bin on, a deleted object comes back with all its attributes, group memberships included, and you don't have to touch the backup. Once enabled it can't be turned off.
 
-**Troubleshooting note:** running `Enable-ADOptionalFeature` returned *"The FSMO role ownership could not be verified because its directory partition has not replicated successfully with at least one replication partner."* The check showed:
-- the Recycle Bin was **already enabled** forest-wide;
-- the error came from the second domain controller (`TAILWIND-MBR1`) being **powered off**. Before a forest-wide operation, the FSMO role holder needs a successful replication with a partner.
+When I ran `Enable-ADOptionalFeature` I got this:
+
+> The FSMO role ownership could not be verified because its directory partition has not replicated successfully with at least one replication partner
+
+Turned out two things were going on. The Recycle Bin was already enabled for the forest, and the error itself came from `TAILWIND-MBR1` being powered off. Before a forest-wide change the role holder wants to replicate with a partner first, and it couldn't.
 
 ```powershell
 Get-ADOptionalFeature -Filter "Name -eq 'Recycle Bin Feature'" | Format-List Name, EnabledScopes
@@ -87,15 +89,15 @@ Get-ADOptionalFeature -Filter "Name -eq 'Recycle Bin Feature'" | Format-List Nam
 
 ![Recycle Bin enabled scopes](screenshots/06-recycle-bin-enabled.png)
 
-7. Test objects
+## 7. Test objects
 
-Created an OU `BackupTest` with a security group `BT-Group` and three users, all members of the group.
+An OU called `BackupTest`, a group `BT-Group`, and three users in the group.
 
 ![Test OU, group and users](screenshots/07-test-objects.png)
 
-8. Scenario: one user deleted by mistake
+## 8. Restoring one deleted user
 
-**Delete:** after `Remove-ADUser`, the user no longer exists in the domain. It appears in Deleted Objects as `BT User1 DEL:<GUID>`, with `Deleted: True` and `LastKnownParent: OU=BackupTest`.
+After `Remove-ADUser` the user is gone from the domain and shows up in Deleted Objects as `BT User1 DEL:<GUID>`, with `LastKnownParent` pointing to `OU=BackupTest`.
 
 ```powershell
 Remove-ADUser -Identity "bt.user1" -Confirm:$false
@@ -104,7 +106,7 @@ Get-ADObject -Filter 'isDeleted -eq $true -and samAccountName -eq "bt.user1"' -I
 
 ![User deleted](screenshots/08a-user-deleted.png)
 
-**Restore:** the user is back in its original OU, enabled, and still a member of `BT-Group`.
+Restored it, and it came back in the same OU, enabled and still in `BT-Group`:
 
 ```powershell
 Get-ADObject -Filter 'samAccountName -eq "bt.user1"' -IncludeDeletedObjects | Restore-ADObject
@@ -112,26 +114,26 @@ Get-ADObject -Filter 'samAccountName -eq "bt.user1"' -IncludeDeletedObjects | Re
 
 ![User restored with group membership](screenshots/08b-user-restored.png)
 
-9.Scenario: a whole OU deleted
+## 9. Restoring a whole OU
 
-**Delete:** `Remove-ADOrganizationalUnit -Recursive` removed the OU, the group, and all three users. All five objects moved to Deleted Objects.
+`Remove-ADOrganizationalUnit -Recursive` took out the OU, the group and the three users, five objects in total.
 
 ![OU and its objects deleted](screenshots/09a-ou-deleted.png)
 
-**Restore:** order matters. The parent OU is restored first, then the objects whose `LastKnownParent` is that OU.
+The order matters here. The OU has to come back first, otherwise the users and the group have nowhere to go. Then you restore everything whose `LastKnownParent` is that OU.
 
 ```powershell
 Get-ADObject -Filter 'isDeleted -eq $true -and Name -like "BackupTest*"' -IncludeDeletedObjects | Restore-ADObject
 Get-ADObject -Filter "LastKnownParent -eq '$ou'" -IncludeDeletedObjects | Restore-ADObject
 ```
 
-All objects are back, and `BT-Group` again has its three members.
+Everything was back, and the group still had its three members.
 
 ![OU, group and users restored](screenshots/09b-ou-restored.png)
 
-10. Automated daily backup
+## 10. Daily backup with Task Scheduler
 
-Registered a scheduled task that runs a System State backup every day at 02:00 as `SYSTEM`, then started it once to test it.
+A task that runs the System State backup every night at 02:00 as `SYSTEM`. I started it once by hand to test it.
 
 ```powershell
 $action  = New-ScheduledTaskAction -Execute "wbadmin.exe" -Argument "start systemstatebackup -backuptarget:E: -quiet"
@@ -142,15 +144,13 @@ Start-ScheduledTask -TaskName "AD-SystemState-Backup"
 
 ![Scheduled backup task running](screenshots/10a-scheduled-task-running.png)
 
-11. Troubleshooting: the scheduled backup failed
+## 11. The scheduled backup failed
 
-The test run of the scheduled task ended with *"The backup operation completed with errors. The backup of the system state failed."*
+The test run ended with "The backup of the system state failed".
 
 ![Scheduled backup failed](screenshots/10b-backup-failed-summary.png)
 
-**Diagnosis:**
-- The Windows Server Backup error log and the `Microsoft-Windows-Backup` event log showed **Event ID 7** (*completed with errors*).
-- The backup target had **0.8 GB free out of 20 GB**: the first System State backup was about 19 GB, so there was no room for a second one.
+The backup log and the `Microsoft-Windows-Backup` event log (Event ID 7, completed with errors) didn't say much, but the target disk did: 0.8 GB free out of 20 GB. The first backup was around 19 GB and there was no room for another one.
 
 ```powershell
 Get-Volume -DriveLetter E
@@ -159,7 +159,7 @@ Get-WinEvent -LogName "Microsoft-Windows-Backup" -MaxEvents 5
 
 ![Backup failed: target disk full](screenshots/10b-backup-failed-diagnostic.png)
 
-**Fix, part 1: free the target.** `wbadmin delete systemstatebackup` did not work, because the backup also contained the EFI System Partition (not System State only); `wbadmin delete backup` did. Free space went back to **19.9 GB**.
+**Freeing the disk.** `wbadmin delete systemstatebackup` refused, because the backup also included the EFI System Partition and that command only deletes System State-only backups. `wbadmin delete backup` worked and got me back to 19.9 GB free.
 
 ```powershell
 wbadmin delete backup -backupTarget:E: -keepVersions:0 -quiet
@@ -167,9 +167,9 @@ wbadmin delete backup -backupTarget:E: -keepVersions:0 -quiet
 
 ![Old backups deleted, space freed](screenshots/11a-old-backup-deleted.png)
 
-**Fix, part 2: grow the backup disk to 40 GB.** A 20 GB target only fits one full System State backup, so I expanded the virtual disk.
-- `Resize-VHD` failed with *"The process cannot access the file because it is being used by another process."*
-- **Root cause:** Hyper-V checkpoints taken after the disk was attached. The VM was writing to differencing disks (`.avhdx`), so the parent `.vhdx` was locked.
+**Growing the disk to 40 GB.** 20 GB only holds one full backup, so I wanted more room. `Resize-VHD` failed with "The process cannot access the file because it is being used by another process."
+
+The cause was Hyper-V checkpoints taken after I had attached the disk. The VM was writing to `.avhdx` differencing disks and the original `.vhdx` was locked.
 
 ```powershell
 Get-VMSnapshot -VMName TAILWIND-DC1
@@ -178,13 +178,13 @@ Get-VMHardDiskDrive -VMName TAILWIND-DC1
 
 ![Checkpoints and .avhdx differencing disks](screenshots/11b-checkpoint-diagnostic.png)
 
-Removed the checkpoints, waited for Hyper-V to merge the differencing disks back into the parent disks, then resized the disk on the host and extended the partition inside the DC.
+I deleted the checkpoints, waited for the merge to finish, resized the disk on the host and extended the partition inside the DC:
 
 ```powershell
-# Hyper-V host
+# on the Hyper-V host
 Get-VMSnapshot -VMName TAILWIND-DC1 | Remove-VMSnapshot
 Resize-VHD -Path "C:\VirtualMachines\VHDs\TAILWIND-DC1-Backup.vhdx" -SizeBytes 40GB
-# Domain controller
+# on the DC
 Update-Disk -Number (Get-Partition -DriveLetter E).DiskNumber
 Resize-Partition -DriveLetter E -Size (Get-PartitionSupportedSize -DriveLetter E).SizeMax
 ```
@@ -195,24 +195,18 @@ Resize-Partition -DriveLetter E -Size (Get-PartitionSupportedSize -DriveLetter E
 
 ![Partition E: extended to 40 GB](screenshots/11e-partition-extended.png)
 
-**Result:** the scheduled backup ran again and completed successfully.
+After that the scheduled backup ran fine. `LastTaskResult` is 0 and the next run is set for 02:00.
 
 ![Scheduled backup completed](screenshots/11f-scheduled-backup-completed.png)
 
 ![Task result and backup versions](screenshots/11g-task-result-versions.png)
 
-**Lesson:** a System State backup of this DC is about 19 GB, so a 20 GB target holds one version only. In production the backup target must be sized for the retention you need (number of versions × backup size, plus headroom), and failed jobs must be monitored, not assumed to succeed.
+## Notes
 
----
-
-## Key Takeaways
-
-- Keep DC backups on a separate disk, and check the NTDS VSS writer before backing up.
-- Verify the catalog and the components (NTDS, SYSVOL, registry), not just the job status.
-- Use the AD Recycle Bin for deleted objects; it keeps group memberships and all attributes.
-- When restoring a deleted OU, restore the parent first, then its children.
-- Forest-wide operations need healthy replication: an offline DC can block them.
-- A backup only helps if it runs regularly, so automate it and check the result.
-- Size the backup target for the retention you need: a full disk silently breaks scheduled backups.
-- A Hyper-V checkpoint is not a backup, and a disk with checkpoints cannot be resized until they are merged.
-- DC backups contain password hashes: treat them as Tier 0 and restrict access.
+- Keep DC backups on their own disk and check the NTDS writer before backing up.
+- Look at what's inside the backup, not just the job status.
+- Recycle Bin for deleted objects, backup for real damage. Restore the parent OU before its children.
+- An offline DC can block forest-wide changes like enabling the Recycle Bin.
+- Size the backup disk for how many versions you want to keep. A full disk just makes the job fail quietly.
+- Hyper-V checkpoints aren't backups, and a disk with checkpoints can't be resized until they're merged.
+- DC backups contain password hashes, so they need the same protection as the DC itself.
